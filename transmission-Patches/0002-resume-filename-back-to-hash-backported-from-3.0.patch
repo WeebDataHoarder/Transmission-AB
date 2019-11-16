@@ -1,0 +1,575 @@
+From 39499b9b598a5f90ab0aaeacba1acbf735bc4e09 Mon Sep 17 00:00:00 2001
+From: weeb <weeb@lazy.bastard>
+Date: Sat, 16 Nov 2019 11:22:25 +0300
+Subject: [PATCH] resume filename back to hash (backported from 3.0)
+
+
+diff --git a/libtransmission/metainfo.c b/libtransmission/metainfo.c
+index 2c04e4d..7e1f67e 100644
+--- a/libtransmission/metainfo.c
++++ b/libtransmission/metainfo.c
+@@ -39,8 +39,7 @@ char_is_path_separator (char c)
+   return strchr(PATH_DELIMITER_CHARS, c) != NULL;
+ }
+ 
+-char*
+-tr_metainfoGetBasename (const tr_info * inf)
++static char* metainfoGetBasenameNameAndPartialHash(tr_info const* inf)
+ {
+   size_t i;
+   const char * name = inf->originalName;
+@@ -54,13 +53,31 @@ tr_metainfoGetBasename (const tr_info * inf)
+   return ret;
+ }
+ 
+-static char*
+-getTorrentFilename (const tr_session * session, const tr_info * inf)
++static char* metainfoGetBasenameHashOnly(tr_info const* inf)
++{
++  return tr_strdup(inf->hashString);
++}
++
++char* tr_metainfoGetBasename(tr_info const* inf, enum tr_metainfo_basename_format format)
+ {
+-  char * base = tr_metainfoGetBasename (inf);
+-  char * filename = tr_strdup_printf ("%s" TR_PATH_DELIMITER_STR "%s.torrent",
+-                                      tr_getTorrentDir (session), base);
+-  tr_free (base);
++  switch (format)
++  {
++    case TR_METAINFO_BASENAME_NAME_AND_PARTIAL_HASH:
++      return metainfoGetBasenameNameAndPartialHash(inf);
++
++    case TR_METAINFO_BASENAME_HASH:
++      return metainfoGetBasenameHashOnly(inf);
++
++    default:
++      assert(false);
++          return NULL;
++  }
++}
++
++static char* getTorrentFilename(tr_session const* session, tr_info const* inf, enum tr_metainfo_basename_format format) {
++  char *base = tr_metainfoGetBasename(inf, format);
++  char* filename = tr_strdup_printf("%s" TR_PATH_DELIMITER_STR "%s.torrent", tr_getTorrentDir(session), base);
++  tr_free(base);
+   return filename;
+ }
+ 
+@@ -566,7 +583,7 @@ tr_metainfoParseImpl (const tr_session  * session,
+ 
+   /* filename of Transmission's copy */
+   tr_free (inf->torrent);
+-  inf->torrent = session ?  getTorrentFilename (session, inf) : NULL;
++  inf->torrent = session != NULL ? getTorrentFilename(session, inf, TR_METAINFO_BASENAME_HASH) : NULL;
+ 
+   return NULL;
+ }
+@@ -630,8 +647,27 @@ tr_metainfoRemoveSaved (const tr_session * session, const tr_info * inf)
+ {
+   char * filename;
+ 
+-  filename = getTorrentFilename (session, inf);
++  filename = getTorrentFilename(session, inf, TR_METAINFO_BASENAME_HASH);
+   tr_sys_path_remove (filename, NULL);
+   tr_free (filename);
++
++  filename = getTorrentFilename(session, inf, TR_METAINFO_BASENAME_NAME_AND_PARTIAL_HASH);
++  tr_sys_path_remove(filename, NULL);
++  tr_free(filename);
++}
++
++void tr_metainfoMigrateFile(tr_session const* session, tr_info const* info, enum tr_metainfo_basename_format old_format,
++                            enum tr_metainfo_basename_format new_format)
++{
++  char* old_filename = getTorrentFilename(session, info, old_format);
++  char* new_filename = getTorrentFilename(session, info, new_format);
++
++  if (tr_sys_path_rename(old_filename, new_filename, NULL))
++  {
++    tr_logAddNamedError(info->name, "Migrated torrent file from \"%s\" to \"%s\"", old_filename, new_filename);
++  }
++
++  tr_free(new_filename);
++  tr_free(old_filename);
+ }
+ 
+diff --git a/libtransmission/metainfo.h b/libtransmission/metainfo.h
+index f713d36..263b3f9 100644
+--- a/libtransmission/metainfo.h
++++ b/libtransmission/metainfo.h
+@@ -17,6 +17,12 @@
+ #include "transmission.h"
+ #include "variant.h"
+ 
++enum tr_metainfo_basename_format
++{
++    TR_METAINFO_BASENAME_NAME_AND_PARTIAL_HASH,
++    TR_METAINFO_BASENAME_HASH
++};
++
+ bool  tr_metainfoParse (const tr_session  * session,
+                         const tr_variant  * variant,
+                         tr_info           * setmeInfo,
+@@ -26,7 +32,9 @@ bool  tr_metainfoParse (const tr_session  * session,
+ void tr_metainfoRemoveSaved (const tr_session * session,
+                              const tr_info    * info);
+ 
+-char* tr_metainfoGetBasename (const tr_info *);
++char* tr_metainfoGetBasename(tr_info const*, enum tr_metainfo_basename_format format);
+ 
++void tr_metainfoMigrateFile(tr_session const* session, tr_info const* info, enum tr_metainfo_basename_format old_format,
++                            enum tr_metainfo_basename_format new_format);
+ 
+ #endif
+diff --git a/libtransmission/rename-test.c b/libtransmission/rename-test.c
+index 489ee4a..94db52a 100644
+--- a/libtransmission/rename-test.c
++++ b/libtransmission/rename-test.c
+@@ -202,7 +202,7 @@ test_single_filename_torrent (void)
+   /* (while it's renamed: confirm that the .resume file remembers the changes) */
+   tr_torrentSaveResume (tor);
+   libttest_sync ();
+-  loaded = tr_torrentLoadResume (tor, ~0, ctor);
++  loaded = tr_torrentLoadResume (tor, ~0, ctor, NULL);
+   check_streq ("foobar", tr_torrentName(tor));
+   check ((loaded & TR_FR_NAME) != 0);
+ 
+@@ -353,7 +353,7 @@ test_multifile_torrent (void)
+   /* this is a bit dodgy code-wise, but let's make sure the .resume file got the name */
+   tr_free (files[1].name);
+   tor->info.files[1].name = tr_strdup ("gabba gabba hey");
+-  loaded = tr_torrentLoadResume (tor, ~0, ctor);
++  loaded = tr_torrentLoadResume (tor, ~0, ctor, NULL);
+   check ((loaded & TR_FR_FILENAMES) != 0);
+   check_streq (expected_files[0],                           files[0].name);
+   check_streq ("Felidae/Felinae/Felis/placeholder/Kyphi",   files[1].name);
+diff --git a/libtransmission/resume.c b/libtransmission/resume.c
+index c0547e0..9625fc6 100644
+--- a/libtransmission/resume.c
++++ b/libtransmission/resume.c
+@@ -28,10 +28,9 @@ enum
+   MAX_REMEMBERED_PEERS = 200
+ };
+ 
+-static char*
+-getResumeFilename (const tr_torrent * tor)
++static char* getResumeFilename(tr_torrent const* tor, enum tr_metainfo_basename_format format)
+ {
+-  char * base = tr_metainfoGetBasename (tr_torrentInfo (tor));
++  char* base = tr_metainfoGetBasename(tr_torrentInfo(tor), format);
+   char * filename = tr_strdup_printf ("%s" TR_PATH_DELIMITER_STR "%s.resume",
+                                       tr_getResumeDir (tor->session), base);
+   tr_free (base);
+@@ -688,7 +687,7 @@ tr_torrentSaveResume (tr_torrent * tor)
+   saveFilenames (&top, tor);
+   saveName (&top, tor);
+ 
+-  filename = getResumeFilename (tor);
++  filename = getResumeFilename(tor, TR_METAINFO_BASENAME_HASH);
+   if ((err = tr_variantToFile (&top, TR_VARIANT_FMT_BENC, filename)))
+     tr_torrentSetLocalError (tor, "Unable to save resume file: %s", tr_strerror (err));
+   tr_free (filename);
+@@ -696,171 +695,209 @@ tr_torrentSaveResume (tr_torrent * tor)
+   tr_variantFree (&top);
+ }
+ 
+-static uint64_t
+-loadFromFile (tr_torrent * tor, uint64_t fieldsToLoad)
++static uint64_t loadFromFile(tr_torrent* tor, uint64_t fieldsToLoad, bool* didRenameToHashOnlyName)
+ {
+-  size_t len;
+-  int64_t  i;
+-  const char * str;
+-  char * filename;
+-  tr_variant top;
+-  bool boolVal;
+-  uint64_t fieldsLoaded = 0;
+-  const bool wasDirty = tor->isDirty;
+-  tr_error * error = NULL;
++    assert(tr_isTorrent(tor));
++
++    size_t len;
++    int64_t i;
++    char const* str;
++    char* filename;
++    tr_variant top;
++    bool boolVal;
++    uint64_t fieldsLoaded = 0;
++    bool const wasDirty = tor->isDirty;
++    tr_error* error = NULL;
+ 
+-  assert (tr_isTorrent (tor));
++    if (didRenameToHashOnlyName != NULL)
++    {
++        *didRenameToHashOnlyName = false;
++    }
+ 
+-  filename = getResumeFilename (tor);
++    filename = getResumeFilename(tor, TR_METAINFO_BASENAME_HASH);
+ 
+-  if (!tr_variantFromFile (&top, TR_VARIANT_FMT_BENC, filename, &error))
++    if (!tr_variantFromFile(&top, TR_VARIANT_FMT_BENC, filename, &error))
+     {
+-      tr_logAddTorDbg (tor, "Couldn't read \"%s\": %s", filename, error->message);
+-      tr_error_free (error);
++        tr_logAddTorDbg(tor, "Couldn't read \"%s\": %s", filename, error->message);
++        tr_error_clear(&error);
++
++        char* old_filename = getResumeFilename(tor, TR_METAINFO_BASENAME_NAME_AND_PARTIAL_HASH);
++
++        if (!tr_variantFromFile(&top, TR_VARIANT_FMT_BENC, old_filename, &error))
++        {
++            tr_logAddTorDbg(tor, "Couldn't read \"%s\" either: %s", old_filename, error->message);
++            tr_error_free(error);
+ 
+-      tr_free (filename);
+-      return fieldsLoaded;
++            tr_free(old_filename);
++            tr_free(filename);
++            return fieldsLoaded;
++        }
++
++        if (tr_sys_path_rename(old_filename, filename, NULL))
++        {
++            tr_logAddTorDbg(tor, "Migrated resume file from \"%s\" to \"%s\"", old_filename, filename);
++
++            if (didRenameToHashOnlyName != NULL)
++            {
++                *didRenameToHashOnlyName = true;
++            }
++        }
++
++        tr_free(old_filename);
+     }
+ 
+-  tr_logAddTorDbg (tor, "Read resume file \"%s\"", filename);
++    tr_logAddTorDbg(tor, "Read resume file \"%s\"", filename);
+ 
+-  if ((fieldsToLoad & TR_FR_CORRUPT)
+-      && tr_variantDictFindInt (&top, TR_KEY_corrupt, &i))
++    if ((fieldsToLoad & TR_FR_CORRUPT) != 0 && tr_variantDictFindInt(&top, TR_KEY_corrupt, &i))
+     {
+-      tor->corruptPrev = i;
+-      fieldsLoaded |= TR_FR_CORRUPT;
++        tor->corruptPrev = i;
++        fieldsLoaded |= TR_FR_CORRUPT;
+     }
+ 
+-  if ((fieldsToLoad & (TR_FR_PROGRESS | TR_FR_DOWNLOAD_DIR))
+-      && (tr_variantDictFindStr (&top, TR_KEY_destination, &str, &len))
+-      && (str && *str))
++    if ((fieldsToLoad & (TR_FR_PROGRESS | TR_FR_DOWNLOAD_DIR)) != 0 &&
++        tr_variantDictFindStr(&top, TR_KEY_destination, &str, &len) && str != NULL && *str != '\0')
+     {
+-      const bool is_current_dir = tor->currentDir == tor->downloadDir;
+-      tr_free (tor->downloadDir);
+-      tor->downloadDir = tr_strndup (str, len);
+-      if (is_current_dir)
+-        tor->currentDir = tor->downloadDir;
+-      fieldsLoaded |= TR_FR_DOWNLOAD_DIR;
++        bool const is_current_dir = tor->currentDir == tor->downloadDir;
++        tr_free(tor->downloadDir);
++        tor->downloadDir = tr_strndup(str, len);
++
++        if (is_current_dir)
++        {
++            tor->currentDir = tor->downloadDir;
++        }
++
++        fieldsLoaded |= TR_FR_DOWNLOAD_DIR;
+     }
+ 
+-  if ((fieldsToLoad & (TR_FR_PROGRESS | TR_FR_INCOMPLETE_DIR))
+-      && (tr_variantDictFindStr (&top, TR_KEY_incomplete_dir, &str, &len))
+-      && (str && *str))
++    if ((fieldsToLoad & (TR_FR_PROGRESS | TR_FR_INCOMPLETE_DIR)) != 0 &&
++        tr_variantDictFindStr(&top, TR_KEY_incomplete_dir, &str, &len) && str != NULL && *str != '\0')
+     {
+-      const bool is_current_dir = tor->currentDir == tor->incompleteDir;
+-      tr_free (tor->incompleteDir);
+-      tor->incompleteDir = tr_strndup (str, len);
+-      if (is_current_dir)
+-        tor->currentDir = tor->incompleteDir;
+-      fieldsLoaded |= TR_FR_INCOMPLETE_DIR;
++        bool const is_current_dir = tor->currentDir == tor->incompleteDir;
++        tr_free(tor->incompleteDir);
++        tor->incompleteDir = tr_strndup(str, len);
++
++        if (is_current_dir)
++        {
++            tor->currentDir = tor->incompleteDir;
++        }
++
++        fieldsLoaded |= TR_FR_INCOMPLETE_DIR;
+     }
+ 
+-  if ((fieldsToLoad & TR_FR_DOWNLOADED)
+-      && tr_variantDictFindInt (&top, TR_KEY_downloaded, &i))
++    if ((fieldsToLoad & TR_FR_DOWNLOADED) != 0 && tr_variantDictFindInt(&top, TR_KEY_downloaded, &i))
+     {
+-      tor->downloadedPrev = i;
+-      fieldsLoaded |= TR_FR_DOWNLOADED;
++        tor->downloadedPrev = i;
++        fieldsLoaded |= TR_FR_DOWNLOADED;
+     }
+ 
+-  if ((fieldsToLoad & TR_FR_UPLOADED)
+-      && tr_variantDictFindInt (&top, TR_KEY_uploaded, &i))
++    if ((fieldsToLoad & TR_FR_UPLOADED) != 0 && tr_variantDictFindInt(&top, TR_KEY_uploaded, &i))
+     {
+-      tor->uploadedPrev = i;
+-      fieldsLoaded |= TR_FR_UPLOADED;
++        tor->uploadedPrev = i;
++        fieldsLoaded |= TR_FR_UPLOADED;
+     }
+ 
+-  if ((fieldsToLoad & TR_FR_MAX_PEERS)
+-      && tr_variantDictFindInt (&top, TR_KEY_max_peers, &i))
++    if ((fieldsToLoad & TR_FR_MAX_PEERS) != 0 && tr_variantDictFindInt(&top, TR_KEY_max_peers, &i))
+     {
+-      tor->maxConnectedPeers = i;
+-      fieldsLoaded |= TR_FR_MAX_PEERS;
++        tor->maxConnectedPeers = i;
++        fieldsLoaded |= TR_FR_MAX_PEERS;
+     }
+ 
+-  if ((fieldsToLoad & TR_FR_RUN)
+-      && tr_variantDictFindBool (&top, TR_KEY_paused, &boolVal))
++    if ((fieldsToLoad & TR_FR_RUN) != 0 && tr_variantDictFindBool(&top, TR_KEY_paused, &boolVal))
+     {
+-      tor->isRunning = !boolVal;
+-      fieldsLoaded |= TR_FR_RUN;
++        tor->isRunning = !boolVal;
++        fieldsLoaded |= TR_FR_RUN;
+     }
+ 
+-  if ((fieldsToLoad & TR_FR_ADDED_DATE)
+-      && tr_variantDictFindInt (&top, TR_KEY_added_date, &i))
++    if ((fieldsToLoad & TR_FR_ADDED_DATE) != 0 && tr_variantDictFindInt(&top, TR_KEY_added_date, &i))
+     {
+-      tor->addedDate = i;
+-      fieldsLoaded |= TR_FR_ADDED_DATE;
++        tor->addedDate = i;
++        fieldsLoaded |= TR_FR_ADDED_DATE;
+     }
+ 
+-  if ((fieldsToLoad & TR_FR_DONE_DATE)
+-      && tr_variantDictFindInt (&top, TR_KEY_done_date, &i))
++    if ((fieldsToLoad & TR_FR_DONE_DATE) != 0 && tr_variantDictFindInt(&top, TR_KEY_done_date, &i))
+     {
+-      tor->doneDate = i;
+-      fieldsLoaded |= TR_FR_DONE_DATE;
++        tor->doneDate = i;
++        fieldsLoaded |= TR_FR_DONE_DATE;
+     }
+ 
+-  if ((fieldsToLoad & TR_FR_ACTIVITY_DATE)
+-      && tr_variantDictFindInt (&top, TR_KEY_activity_date, &i))
++    if ((fieldsToLoad & TR_FR_ACTIVITY_DATE) != 0 && tr_variantDictFindInt(&top, TR_KEY_activity_date, &i))
+     {
+-      tr_torrentSetActivityDate (tor, i);
+-      fieldsLoaded |= TR_FR_ACTIVITY_DATE;
++        tr_torrentSetActivityDate(tor, i);
++        fieldsLoaded |= TR_FR_ACTIVITY_DATE;
+     }
+ 
+-  if ((fieldsToLoad & TR_FR_TIME_SEEDING)
+-      && tr_variantDictFindInt (&top, TR_KEY_seeding_time_seconds, &i))
++    if ((fieldsToLoad & TR_FR_TIME_SEEDING) != 0 && tr_variantDictFindInt(&top, TR_KEY_seeding_time_seconds, &i))
+     {
+-      tor->secondsSeeding = i;
+-      fieldsLoaded |= TR_FR_TIME_SEEDING;
++        tor->secondsSeeding = i;
++        fieldsLoaded |= TR_FR_TIME_SEEDING;
+     }
+ 
+-  if ((fieldsToLoad & TR_FR_TIME_DOWNLOADING)
+-      && tr_variantDictFindInt (&top, TR_KEY_downloading_time_seconds, &i))
++    if ((fieldsToLoad & TR_FR_TIME_DOWNLOADING) != 0 && tr_variantDictFindInt(&top, TR_KEY_downloading_time_seconds, &i))
+     {
+-      tor->secondsDownloading = i;
+-      fieldsLoaded |= TR_FR_TIME_DOWNLOADING;
++        tor->secondsDownloading = i;
++        fieldsLoaded |= TR_FR_TIME_DOWNLOADING;
+     }
+ 
+-  if ((fieldsToLoad & TR_FR_BANDWIDTH_PRIORITY)
+-      && tr_variantDictFindInt (&top, TR_KEY_bandwidth_priority, &i)
+-      && tr_isPriority (i))
++    if ((fieldsToLoad & TR_FR_BANDWIDTH_PRIORITY) != 0 &&
++        tr_variantDictFindInt(&top, TR_KEY_bandwidth_priority, &i) && tr_isPriority(i))
+     {
+-      tr_torrentSetPriority (tor, i);
+-      fieldsLoaded |= TR_FR_BANDWIDTH_PRIORITY;
++        tr_torrentSetPriority(tor, i);
++        fieldsLoaded |= TR_FR_BANDWIDTH_PRIORITY;
+     }
+ 
+-  if (fieldsToLoad & TR_FR_PEERS)
+-    fieldsLoaded |= loadPeers (&top, tor);
++    if ((fieldsToLoad & TR_FR_PEERS) != 0)
++    {
++        fieldsLoaded |= loadPeers(&top, tor);
++    }
+ 
+-  if (fieldsToLoad & TR_FR_FILE_PRIORITIES)
+-    fieldsLoaded |= loadFilePriorities (&top, tor);
++    if ((fieldsToLoad & TR_FR_FILE_PRIORITIES) != 0)
++    {
++        fieldsLoaded |= loadFilePriorities(&top, tor);
++    }
+ 
+-  if (fieldsToLoad & TR_FR_PROGRESS)
+-    fieldsLoaded |= loadProgress (&top, tor);
++    if ((fieldsToLoad & TR_FR_PROGRESS) != 0)
++    {
++        fieldsLoaded |= loadProgress(&top, tor);
++    }
+ 
+-  if (fieldsToLoad & TR_FR_DND)
+-    fieldsLoaded |= loadDND (&top, tor);
++    if ((fieldsToLoad & TR_FR_DND) != 0)
++    {
++        fieldsLoaded |= loadDND(&top, tor);
++    }
+ 
+-  if (fieldsToLoad & TR_FR_SPEEDLIMIT)
+-    fieldsLoaded |= loadSpeedLimits (&top, tor);
++    if ((fieldsToLoad & TR_FR_SPEEDLIMIT) != 0)
++    {
++        fieldsLoaded |= loadSpeedLimits(&top, tor);
++    }
+ 
+-  if (fieldsToLoad & TR_FR_RATIOLIMIT)
+-    fieldsLoaded |= loadRatioLimits (&top, tor);
++    if ((fieldsToLoad & TR_FR_RATIOLIMIT) != 0)
++    {
++        fieldsLoaded |= loadRatioLimits(&top, tor);
++    }
+ 
+-  if (fieldsToLoad & TR_FR_IDLELIMIT)
+-    fieldsLoaded |= loadIdleLimits (&top, tor);
++    if ((fieldsToLoad & TR_FR_IDLELIMIT) != 0)
++    {
++        fieldsLoaded |= loadIdleLimits(&top, tor);
++    }
+ 
+-  if (fieldsToLoad & TR_FR_FILENAMES)
+-    fieldsLoaded |= loadFilenames (&top, tor);
++    if ((fieldsToLoad & TR_FR_FILENAMES) != 0)
++    {
++        fieldsLoaded |= loadFilenames(&top, tor);
++    }
+ 
+-  if (fieldsToLoad & TR_FR_NAME)
+-    fieldsLoaded |= loadName (&top, tor);
++    if ((fieldsToLoad & TR_FR_NAME) != 0)
++    {
++        fieldsLoaded |= loadName(&top, tor);
++    }
+ 
+-  /* loading the resume file triggers of a lot of changes,
+-   * but none of them needs to trigger a re-saving of the
+-   * same resume information... */
+-  tor->isDirty = wasDirty;
++    /* loading the resume file triggers of a lot of changes,
++     * but none of them needs to trigger a re-saving of the
++     * same resume information... */
++    tor->isDirty = wasDirty;
+ 
+-  tr_variantFree (&top);
+-  tr_free (filename);
+-  return fieldsLoaded;
++    tr_variantFree(&top);
++    tr_free(filename);
++    return fieldsLoaded;
+ }
+ 
+ static uint64_t
+@@ -910,28 +947,30 @@ useFallbackFields (tr_torrent * tor, uint64_t fields, const tr_ctor * ctor)
+   return setFromCtor (tor, fields, ctor, TR_FALLBACK);
+ }
+ 
+-uint64_t
+-tr_torrentLoadResume (tr_torrent *    tor,
+-                      uint64_t        fieldsToLoad,
+-                      const tr_ctor * ctor)
++uint64_t tr_torrentLoadResume(tr_torrent* tor, uint64_t fieldsToLoad, tr_ctor const* ctor, bool* didRenameToHashOnlyName)
+ {
+-  uint64_t ret = 0;
++    assert(tr_isTorrent(tor));
+ 
+-  assert (tr_isTorrent (tor));
++    uint64_t ret = 0;
+ 
+-  ret |= useManditoryFields (tor, fieldsToLoad, ctor);
+-  fieldsToLoad &= ~ret;
+-  ret |= loadFromFile (tor, fieldsToLoad);
+-  fieldsToLoad &= ~ret;
+-  ret |= useFallbackFields (tor, fieldsToLoad, ctor);
++    ret |= useManditoryFields(tor, fieldsToLoad, ctor);
++    fieldsToLoad &= ~ret;
++    ret |= loadFromFile(tor, fieldsToLoad, didRenameToHashOnlyName);
++    fieldsToLoad &= ~ret;
++    ret |= useFallbackFields(tor, fieldsToLoad, ctor);
+ 
+-  return ret;
++    return ret;
+ }
+ 
+-void
+-tr_torrentRemoveResume (const tr_torrent * tor)
++void tr_torrentRemoveResume(tr_torrent const* tor)
+ {
+-  char * filename = getResumeFilename (tor);
+-  tr_sys_path_remove (filename, NULL);
+-  tr_free (filename);
++    char* filename;
++
++    filename = getResumeFilename(tor, TR_METAINFO_BASENAME_HASH);
++    tr_sys_path_remove(filename, NULL);
++    tr_free(filename);
++
++    filename = getResumeFilename(tor, TR_METAINFO_BASENAME_NAME_AND_PARTIAL_HASH);
++    tr_sys_path_remove(filename, NULL);
++    tr_free(filename);
+ }
+diff --git a/libtransmission/resume.h b/libtransmission/resume.h
+index 49bc44b..712327b 100644
+--- a/libtransmission/resume.h
++++ b/libtransmission/resume.h
+@@ -43,9 +43,7 @@ enum
+ /**
+  * Returns a bitwise-or'ed set of the loaded resume data
+  */
+-uint64_t tr_torrentLoadResume   (tr_torrent        * tor,
+-                                 uint64_t            fieldsToLoad,
+-                                 const tr_ctor     * ctor);
++uint64_t tr_torrentLoadResume(tr_torrent* tor, uint64_t fieldsToLoad, tr_ctor const* ctor, bool* didRenameToHashOnlyName);
+ 
+ void     tr_torrentSaveResume   (tr_torrent        * tor);
+ 
+diff --git a/libtransmission/torrent.c b/libtransmission/torrent.c
+index 04dd922..50d7e82 100644
+--- a/libtransmission/torrent.c
++++ b/libtransmission/torrent.c
+@@ -897,7 +897,14 @@ torrentInit (tr_torrent * tor, const tr_ctor * ctor)
+                                                overwritten by the resume file */
+ 
+   torrentInitFromInfo (tor);
+-  loaded = tr_torrentLoadResume (tor, ~0, ctor);
++  bool didRenameResumeFileToHashOnlyName = false;
++  loaded = tr_torrentLoadResume(tor, ~0, ctor, &didRenameResumeFileToHashOnlyName);
++
++  if (didRenameResumeFileToHashOnlyName)
++  {
++    /* Rename torrent file as well */
++    tr_metainfoMigrateFile(session, &tor->info, TR_METAINFO_BASENAME_NAME_AND_PARTIAL_HASH, TR_METAINFO_BASENAME_HASH);
++  }
+   tor->completeness = tr_cpGetStatus (&tor->completion);
+   setLocalErrorIfFilesDisappeared (tor);
+ 
+-- 
+2.8.3
+
