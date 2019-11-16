@@ -1,0 +1,83 @@
+From 5f4cb593c3c7f2ff74e2f2210bf1448a2bdead91 Mon Sep 17 00:00:00 2001
+From: weeb <weeb@lazy.bastard>
+Date: Sat, 16 Nov 2019 11:37:14 +0300
+Subject: [PATCH] semiseq 
+
+---
+ libtransmission/peer-mgr.c | 34 ++++++++++++++++++++++++++++------
+ 1 file changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/libtransmission/peer-mgr.c b/libtransmission/peer-mgr.c
+index 30e9036f9..cf45c8a8c 100644
+--- a/libtransmission/peer-mgr.c
++++ b/libtransmission/peer-mgr.c
+@@ -971,16 +971,16 @@ comparePieceByWeight (const void * va, const void * vb)
+   if (ia > ib) return -1;
+   if (ia < ib) return 1;
+ 
+-  /* tertiary key: rarest first. */
++  /* sort by pieces to enable semiseq */
++  if (a->salt < b->salt) return -1;
++  if (a->salt > b->salt) return 1;
++
++  /* rarity after pieces */
+   ia = rep[a->index];
+   ib = rep[b->index];
+   if (ia < ib) return -1;
+   if (ia > ib) return 1;
+ 
+-  /* quaternary key: random */
+-  if (a->salt < b->salt) return -1;
+-  if (a->salt > b->salt) return 1;
+-
+   /* okay, they're equal */
+   return 0;
+ }
+@@ -1075,6 +1075,14 @@ pieceListLookup (tr_swarm * s, tr_piece_index_t index)
+   return NULL;
+ }
+ 
++static void
++k_swap (tr_piece_index_t *a, tr_piece_index_t *b)
++{
++  tr_piece_index_t temp = *a;
++  *a = *b;
++  *b = temp;
++}
++
+ static void
+ pieceListRebuild (tr_swarm * s)
+ {
+@@ -1088,6 +1096,20 @@ pieceListRebuild (tr_swarm * s)
+       struct weighted_piece * pieces;
+       int pieceCount;
+ 
++      uint32_t desired_sequence_size = 33554432; //32 MiB
++      tr_piece_index_t *ilist;
++      tr_piece_index_t nr_sequences;
++
++      nr_sequences = tor->blockSize * tor->blockCount / desired_sequence_size + 1;
++      ilist = tr_new(tr_piece_index_t, nr_sequences);
++      for(tr_piece_index_t _index = 0; _index<nr_sequences; _index++){
++        ilist[_index] = _index;
++      }
++      for(tr_piece_index_t _index = nr_sequences-1; _index>0; _index--){
++        tr_piece_index_t _index_r = rand() % (_index + 1);
++        k_swap(&ilist[_index], &ilist[_index_r]);
++      }
++
+       /* build the new list */
+       pool = tr_new (tr_piece_index_t, inf->pieceCount);
+       for (i=0; i<inf->pieceCount; ++i)
+@@ -1101,7 +1123,7 @@ pieceListRebuild (tr_swarm * s)
+           struct weighted_piece * piece = pieces + i;
+           piece->index = pool[i];
+           piece->requestCount = 0;
+-          piece->salt = tr_rand_int_weak (4096);
++          piece->salt = ilist[(tr_piece_index_t)(0.5 + (double)piece->index / (double)inf->pieceCount * (double)nr_sequences)];
+         }
+ 
+       /* if we already had a list of pieces, merge it into
+-- 
+
+
