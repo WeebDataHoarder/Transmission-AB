@@ -42,6 +42,6 @@ jobs:
       - name: Upload Results
         uses: actions/upload-artifact@v2
         with:
-          name: "transmission.${{ github.sha }}.${{ matrix.os }}"
+          name: "transmission.${{ matrix.os }}.${{ github.sha }}"
           path: "./Transmission-AB/results/"
 
