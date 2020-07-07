@@ -1,11 +1,11 @@
-From 7ef506f87037cd142f58fd836be0feaa9c8bd9ba Mon Sep 17 00:00:00 2001
+From 6848a8e9302a030fa6ba7cb22eb69a4ee46c91c9 Mon Sep 17 00:00:00 2001
 From: weeb <weeb@lazy.bastard>
 Date: Sat, 16 Nov 2019 11:37:14 +0300
 Subject: [PATCH] semiseq
 
 
 diff --git a/libtransmission/peer-mgr.c b/libtransmission/peer-mgr.c
-index 30e9036..cf45c8a 100644
+index 30e9036f9..cf45c8a8c 100644
 --- a/libtransmission/peer-mgr.c
 +++ b/libtransmission/peer-mgr.c
 @@ -971,16 +971,16 @@ comparePieceByWeight (const void * va, const void * vb)
@@ -30,10 +30,11 @@ index 30e9036..cf45c8a 100644
    /* okay, they're equal */
    return 0;
  }
-@@ -1076,6 +1076,14 @@ pieceListLookup (tr_swarm * s, tr_piece_index_t index)
+@@ -1075,6 +1075,14 @@ pieceListLookup (tr_swarm * s, tr_piece_index_t index)
+   return NULL;
  }
  
- static void
++static void
 +k_swap (tr_piece_index_t *a, tr_piece_index_t *b)
 +{
 +  tr_piece_index_t temp = *a;
@@ -41,10 +42,9 @@ index 30e9036..cf45c8a 100644
 +  *b = temp;
 +}
 +
-+static void
+ static void
  pieceListRebuild (tr_swarm * s)
  {
-   if (!tr_torrentIsSeed (s->tor))
 @@ -1088,6 +1096,20 @@ pieceListRebuild (tr_swarm * s)
        struct weighted_piece * pieces;
        int pieceCount;
@@ -76,5 +76,5 @@ index 30e9036..cf45c8a 100644
  
        /* if we already had a list of pieces, merge it into
 -- 
-2.8.3
+2.25.1
 
