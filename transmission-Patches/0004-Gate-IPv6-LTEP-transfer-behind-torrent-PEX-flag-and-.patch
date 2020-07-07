@@ -1,4 +1,4 @@
-From 84a70ef87fb04888b1e125666eff787c9169bafc Mon Sep 17 00:00:00 2001
+From b39e554e5a1375a7fed9cf9866bd45208e12eda7 Mon Sep 17 00:00:00 2001
 From: WeebDataHoarder <57538841+WeebDataHoarder@users.noreply.github.com>
 Date: Tue, 7 Jul 2020 13:13:08 +0200
 Subject: [PATCH] Gate IPv6 LTEP transfer behind torrent PEX flag, and do not
@@ -7,7 +7,7 @@ Subject: [PATCH] Gate IPv6 LTEP transfer behind torrent PEX flag, and do not
 
 
 diff --git a/libtransmission/peer-msgs.c b/libtransmission/peer-msgs.c
-index 7077d1b7a..1a49bcf1a 100644
+index 7077d1b7a..f1efe246d 100644
 --- a/libtransmission/peer-msgs.c
 +++ b/libtransmission/peer-msgs.c
 @@ -951,7 +951,7 @@ sendLtepHandshake (tr_peerMsgs * msgs)
@@ -19,7 +19,16 @@ index 7077d1b7a..1a49bcf1a 100644
          tr_variantDictAddRaw (&val, TR_KEY_ipv6, ipv6, 16);
      if (allow_metadata_xfer && tr_torrentHasMetadata (msgs->torrent)
                              && (msgs->torrent->infoDictLength > 0))
-@@ -998,6 +998,20 @@ parseLtepHandshake (tr_peerMsgs * msgs, uint32_t len, struct evbuffer * inbuf)
+@@ -987,6 +987,8 @@ parseLtepHandshake (tr_peerMsgs * msgs, uint32_t len, struct evbuffer * inbuf)
+ {
+     int64_t   i;
+     tr_variant   val, * sub;
++    bool allow_pex;
++    bool allow_metadata_xfer;
+     uint8_t * tmp = tr_new (uint8_t, len);
+     const uint8_t *addr;
+     size_t addr_len;
+@@ -998,6 +1000,20 @@ parseLtepHandshake (tr_peerMsgs * msgs, uint32_t len, struct evbuffer * inbuf)
      tr_peerIoReadBytes (msgs->io, inbuf, tmp, len);
      msgs->peerSentLtepHandshake = true;
  
@@ -40,7 +49,7 @@ index 7077d1b7a..1a49bcf1a 100644
      if (tr_variantFromBenc (&val, tmp, len) || !tr_variantIsDict (&val))
      {
          dbgmsg (msgs, "GET  extended-handshake, couldn't get dictionary");
-@@ -1023,7 +1037,7 @@ parseLtepHandshake (tr_peerMsgs * msgs, uint32_t len, struct evbuffer * inbuf)
+@@ -1023,7 +1039,7 @@ parseLtepHandshake (tr_peerMsgs * msgs, uint32_t len, struct evbuffer * inbuf)
      msgs->peerSupportsPex = false;
      msgs->peerSupportsMetadataXfer = false;
  
@@ -49,7 +58,7 @@ index 7077d1b7a..1a49bcf1a 100644
          if (tr_variantDictFindInt (sub, TR_KEY_ut_pex, &i)) {
              msgs->peerSupportsPex = i != 0;
              msgs->ut_pex_id = (uint8_t) i;
-@@ -1044,7 +1058,7 @@ parseLtepHandshake (tr_peerMsgs * msgs, uint32_t len, struct evbuffer * inbuf)
+@@ -1044,7 +1060,7 @@ parseLtepHandshake (tr_peerMsgs * msgs, uint32_t len, struct evbuffer * inbuf)
      }
  
      /* look for metainfo size (BEP 9) */
@@ -58,7 +67,7 @@ index 7077d1b7a..1a49bcf1a 100644
          if (tr_torrentSetMetadataSizeHint (msgs->torrent, i))
              msgs->metadata_size_hint = (size_t) i;
      }
-@@ -1060,7 +1074,7 @@ parseLtepHandshake (tr_peerMsgs * msgs, uint32_t len, struct evbuffer * inbuf)
+@@ -1060,7 +1076,7 @@ parseLtepHandshake (tr_peerMsgs * msgs, uint32_t len, struct evbuffer * inbuf)
          dbgmsg (msgs, "peer's port is now %d", (int)i);
      }
  
@@ -67,7 +76,7 @@ index 7077d1b7a..1a49bcf1a 100644
          && tr_variantDictFindRaw (&val, TR_KEY_ipv4, &addr, &addr_len)
          && (addr_len == 4))
      {
-@@ -1069,7 +1083,7 @@ parseLtepHandshake (tr_peerMsgs * msgs, uint32_t len, struct evbuffer * inbuf)
+@@ -1069,7 +1085,7 @@ parseLtepHandshake (tr_peerMsgs * msgs, uint32_t len, struct evbuffer * inbuf)
          tr_peerMgrAddPex (msgs->torrent, TR_PEER_FROM_LTEP, &pex, seedProbability);
      }
  
