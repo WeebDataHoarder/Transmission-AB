@@ -1,0 +1,45 @@
+name: Linux Builder
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ubuntu-16.04, ubuntu-18.04, ubuntu-20.04]
+
+    steps:
+      - uses: actions/checkout@v2
+      - name: Update repository dependencies
+        run: sudo apt update
+      - name: Install dependencies
+        run: sudo apt install -y build-essential automake autoconf libtool pkg-config intltool libcurl4-openssl-dev libglib2.0-dev libevent-dev libminiupnpc-dev libgtk-3-dev libappindicator3-dev
+      - name: Init submodules for upstream
+        run: git submodule update --init --recursive
+      - name: Apply patches
+        run: ./applyPatches.sh
+      - name: Init submodules for upstream
+        working-directory: ./Transmission-AB
+        run: git submodule update --init --recursive
+      - name: autogen.sh
+        working-directory: ./Transmission-AB
+        run: ./autogen.sh --enable-utp --enable-cli --enable-daemon --prefix "$(realpath ./results/)"
+      - name: make
+        working-directory: ./Transmission-AB
+        run: make -s
+      - name: make install
+        working-directory: ./Transmission-AB
+        run: make install
+      - name: Upload Results
+        uses: actions/upload-artifact@v2
+        with:
+          name: "transmission.${{ github.sha }}.${{ matrix.os }}"
+          path: "./Transmission-AB/results/"
+
